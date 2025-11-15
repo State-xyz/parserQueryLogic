@@ -25,8 +25,19 @@ type OrExpr struct {
 	Right Expr
 }
 
-// Hỗ trợ identifier chứa - và +
-var tokenRegex = regexp.MustCompile(`\s*([A-Za-z_][A-Za-z0-9_\-\+]*|!=|<=|>=|=|<|>|\(|\)|AND|OR|IN|NOT IN|'[^']*'|"[^"]*"|\d+|,|\S)\s*`)
+// REGEX token hóa:
+// 1. Field trong backtick  → `[^`]+`
+// 2. Operators
+// 3. String literal
+// 4. Identifier (value) chứa chữ-số-_-+-, nhưng KHÔNG cho backtick
+var tokenRegex = regexp.MustCompile(`\s*(` + 
+	"`[^`]+`" +                  // field
+	`|!=|<=|>=|=|<|>` +          // operators
+	`|\(|\)|AND|OR|IN|NOT IN` +  // keywords
+	`|'[^']*'|"[^"]*"` +         // string literal
+	`|[A-Za-z0-9_\-\+]+` +       // identifier value
+	`|,|\S)\s*`)                 // comma + fallback
+
 
 func tokenize(input string) []string {
 	matches := tokenRegex.FindAllStringSubmatch(input, -1)
@@ -88,12 +99,12 @@ func (p *parser) parseAnd() Expr {
 			continue
 		}
 
-		// Nếu gặp OR hoặc ) hoặc hết chuỗi => OK
+		// OK khi gặp OR, ), hoặc hết
 		if token == "OR" || token == ")" || token == "" {
 			return left
 		}
 
-		// Nếu tiếp theo lại là identifier/value => lỗi thiếu AND/OR
+		// Nếu token tiếp theo là identifier/value => lỗi thiếu AND/OR
 		if isValueOrIdentifier(p.current()) {
 			panic("missing AND/OR between conditions near: " + p.current())
 		}
@@ -104,7 +115,7 @@ func (p *parser) parseAnd() Expr {
 
 func (p *parser) parsePrimary() Expr {
 
-	// (subexpression)
+	// ( SUBEXPR )
 	if p.eat("(") {
 		expr := p.parseExpr()
 		if !p.eat(")") {
@@ -113,15 +124,19 @@ func (p *parser) parsePrimary() Expr {
 		return expr
 	}
 
-	field := p.current()
-	if field == "" {
-		panic("unexpected end of input")
+	// Field bắt buộc là backtick
+	fieldToken := p.current()
+
+	if !isBacktickField(fieldToken) {
+		panic("field name must be inside backticks, example: `A`")
 	}
+
+	field := fieldToken[1 : len(fieldToken)-1] // bỏ dấu `
 	p.next()
 
 	op := strings.ToUpper(p.current())
 
-	// Handle IN / NOT IN
+	// IN / NOT IN
 	if op == "IN" || (op == "NOT" && strings.ToUpper(p.tokens[p.pos+1]) == "IN") {
 
 		if op == "NOT" {
@@ -137,6 +152,7 @@ func (p *parser) parsePrimary() Expr {
 		}
 
 		values := []string{}
+
 		for {
 			val := p.current()
 			if val == "" {
@@ -162,7 +178,7 @@ func (p *parser) parsePrimary() Expr {
 		}
 	}
 
-	// Basic comparison operators
+	// Basic operators
 	if op != "=" && op != "!=" && op != "<" && op != ">" && op != "<=" && op != ">=" {
 		panic("invalid operator: " + op)
 	}
@@ -181,24 +197,31 @@ func (p *parser) parsePrimary() Expr {
 	}
 }
 
+// ---------------------- Helpers --------------------------
+
+func isBacktickField(tok string) bool {
+	return strings.HasPrefix(tok, "`") && strings.HasSuffix(tok, "`")
+}
+
+// Value hoặc identifier hợp lệ
 func isValueOrIdentifier(tok string) bool {
 	if tok == "" {
 		return false
 	}
 
-	// String literal
+	// string literal
 	if (strings.HasPrefix(tok, "'") && strings.HasSuffix(tok, "'")) ||
 		(strings.HasPrefix(tok, "\"") && strings.HasSuffix(tok, "\"")) {
 		return true
 	}
 
-	// Number
+	// number
 	if regexp.MustCompile(`^\d+$`).MatchString(tok) {
 		return true
 	}
 
-	// Identifier chứa chữ, số, _, -, +
-	if regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_\-\+]*$`).MatchString(tok) {
+	// identifier không backtick, có chữ số _ - +
+	if regexp.MustCompile(`^[A-Za-z0-9_\-\+]+$`).MatchString(tok) {
 		return true
 	}
 
@@ -211,12 +234,13 @@ func ParseQuery(input string) Expr {
 	return p.parseExpr()
 }
 
-// Demo
+// ----------------------- Demo ----------------------------
+
 func main() {
 	query := `
-		(A = hello-world AND B >= 5)
-		OR C IN (x-y, "a+b", test-1)
-		AND D NOT IN ('x-y', foo-bar+123)
+		(` + "`A-B`" + ` = 1 AND ` + "`C+D`" + ` >= 5)
+		OR ` + "`X`" + ` IN (1, abc-xyz, "hello-world")
+		AND ` + "`Y-Z`" + ` NOT IN ('x-y', foo+bar)
 	`
 
 	expr := ParseQuery(query)
